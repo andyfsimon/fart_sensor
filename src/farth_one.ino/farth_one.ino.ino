@@ -1,28 +1,34 @@
 #include <Wire.h>
-#include <SPI.h>
 #include <Adafruit_Sensor.h>
-#include "Adafruit_BME680.h"
-#include "SparkFun_Si7021_Breakout_Library.h"
+#include <Adafruit_BME680.h>
+#include <SparkFun_Si7021_Breakout_Library.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 #include <PubSubClient.h>
-#include "OneButton.h"
+#include <OneButton.h>
+#include <ArduinoJson.h>
   
+#define BUTTON_PIN 13
+
 // WI-FI Credentials
-//const char* ssid = "<SSID>";
-//const char* password = "<PASSWORD>";
-const char* ssid = "BeaverNet";
-const char* password = "supercazzora";
+String ssid = "<SSID>";
+String password = "<PASSWORD>";
 
 // MQTT Credentials
-const char* mqtt_server = "<MQTT_SERVER>";
-const char* mqtt_user = "<MQTT_USER>";
-const char* mqtt_password = "<MQTT_PASSWORD>";
+String mqtt_server = "<MQTT_SERVER>";
+String mqtt_user = "<MQTT_USER>";
+String mqtt_password = "<MQTT_PASSWORD>";
 
 // InfluxDB Credentials
-const char* influx_server = "<MQTT_SERVER>";
-const char* influx_user = "<MQTT_USER>";
-const char* influx_password = "<MQTT_PASSWORD>";
+String influx_server = "<INFLUX_SERVER>";
+String influx_user = "<INFLUX_USER>";
+String influx_password = "<INFLUX_PASSWORD>";
 
+// Home Assistant Credentials
+String ha_server = "<HA_SERVER>";
+String ha_password = "<HA_PASSWORD>";
+
+// Sensor Variables
 float bme_humidity = 0;
 float bme_temperature = 0;
 float bme_pressure = 0;
@@ -30,7 +36,19 @@ float bme_airquality = 0;
 float bme_altitude = 0;
 float si_humidity = 0;
 float si_temperature = 0;
-float SEALEVELPRESSURE_HPA = 1000.00;
+float SEALEVELPRESSURE_HPA = 0;
+
+int dumpin = 0;
+
+// HTTP Variables
+String influx_data = "";
+String payload = "";
+int httpCode = -1;
+
+// TIMER Variables
+unsigned int last_sealevel = millis();
+unsigned int last_sensors = millis();
+
 
 // I2C Sensors
 Adafruit_BME680 bme;
@@ -38,10 +56,12 @@ Weather si;
 
 // Clients
 WiFiClientSecure espClient;
-PubSubClient client(espClient);
+PubSubClient mqtt(espClient);
+HTTPClient influxdb;
+HTTPClient hass;
 
 // Button
-OneButton button(13, true);
+OneButton button(BUTTON_PIN, true);
 
 
 void setup() {
@@ -49,6 +69,7 @@ void setup() {
   while (!Serial);
   Serial.println(F("Fart Sensor Study"));
 
+  // Leds
   pinMode (0, OUTPUT);
   pinMode (2, OUTPUT);
   digitalWrite(0, HIGH);
@@ -86,27 +107,67 @@ void setup() {
   
   setup_wifi();
 
-  client.setServer(mqtt_server, 8883);
-  client.setCallback(mqtt_callback);
+  mqtt.setServer(mqtt_server, 8883);
+  mqtt.setCallback(mqtt_callback);
 
   button.attachClick(Click);
+
+  getSeaLevelPressure();
 
 }
 
 void loop() {
   
   button.tick();
-  if (!client.connected() && WiFi.status() == WL_CONNECTED ) {
+  if (!mqtt.connected() && WiFi.status() == WL_CONNECTED ) {
     mqtt_reconnect();
   }
-  client.loop();
+  mqtt.loop();
   
-  Serial.println();
-  delay(2000);
-  getSiReadings();
-  printInfo();
- 
+  if ( last_sealevel > (millis() + 60000) ) {
+    getSeaLevelPressure();
+    last_sealevel = millis();
+  }
+
+  if ( last_sensors > (millis() + 5000) ) {
+    getSiReadings();
+    getBMEReadings();
+
+    // Dump data to influxdb
+    influxdb_dump();
+
+    last_sensors = millis();
+
+  }
+
+    
 }
+
+void influxdb_dump()
+{
+  // Dump data to influxdb
+  influx_data = "";
+  influxdb.begin("http://" + influx_server + ":8086/write?db=fartsensor");
+  influxdb.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  influxdb.setAuthorization(influx_user, influx_password);
+  influx_data += "humidity,source=bme value=" + String(bme_humidity) + "\n";
+  influx_data += "humidity,source=si value=" + String(si_humidity) + "\n";
+  influx_data += "temperature,source=bme value=" + String(bme_temperature) + "\n";
+  influx_data += "temperature,source=si value=" + String(si_temperature) + "\n";
+  influx_data += "airquality,source=bme value=" + String(bme_airquality) + "\n";
+  influx_data += "pressure,source=bme value=" + String(bme_pressure) + "\n";
+  influx_data += "altitude,source=bme value=" + String(bme_altitude) + "\n";
+  influx_data += "dumpin,source=manual value=" + String(dumpin) + "\n";
+
+  httpCode = -1;
+  while(httpCode == -1){
+    httpCode = influxdb.POST(influx_data);
+    influxdb.writeToStream(&Serial);
+  }
+
+  influxdb.end();
+}
+
 
 void Click() {
   Serial.println("Takin' a dump");
@@ -115,12 +176,38 @@ void Click() {
   digitalWrite(0, LOW);
   // Set topic for "taking a dump" (on)
   dumpin = 1;
-  client.publish("env/bathroom/dumpin",  String(dumpin).c_str(), true);
-  delay (2000);
+  influxdb_dump();
+  //mqtt.publish("env/bathroom/dumpin",  String(dumpin).c_str(), true);
+
+  delay (5000);
   digitalWrite(0, HIGH);
   // Set topic for "taking a dump" (off)
   dumpin = 0;
-  client.publish("env/bathroom/dumpin",  String(dumpin).c_str(), true);
+  influxdb_dump();
+  //mqtt.publish("env/bathroom/dumpin",  String(dumpin).c_str(), true);
+
+}
+
+void getSeaLevelPressure()
+{
+  hass.begin("http://" + ha_server + ":8123/api/states/sensor.br_pressure?api_password=" + ha_password );
+  hass.addHeader("Content-Type", "application/json");
+  httpCode = -1;
+  while(httpCode == -1){
+    httpCode = hass.GET();
+  }
+  payload = hass.getString();
+  hass.end();
+  
+  const size_t bufferSize = JSON_OBJECT_SIZE(5) + JSON_OBJECT_SIZE(7) + 566 ;
+  DynamicJsonBuffer jsonBuffer(bufferSize);
+  JsonObject& root = jsonBuffer.parseObject(payload);
+
+  if ( root["state"] != "" ) {
+    SEALEVELPRESSURE_HPA = float(root["state"]);
+  } else {
+    Serial.println("Error reading");
+  }
 
 }
 
@@ -130,7 +217,7 @@ void getBMEReadings()
   Serial.println("Failed to perform reading :(");
   return;
   }
-
+  
   bme_temperature = bme.temperature;
   bme_pressure = (bme.pressure / 100.0);
   bme_humidity = bme.humidity;
@@ -140,9 +227,9 @@ void getBMEReadings()
 
 void getSiReadings()
 {
-  // Measure Relative Humidity from the HTU21D or Si7021
+  // Measure Relative Humidity from the Si7021
   si_humidity = si.getRH();
-  // Measure Temperature from the HTU21D or Si7021
+  // Measure Temperature from the Si7021
   si_temperature = si.getTemp();
 }
 
@@ -169,15 +256,32 @@ void setup_wifi() {
     Serial.println(WiFi.localIP());
 }
 
+void mqtt_reconnect() {
+  if (!mqtt.connected()) {
+    Serial.print("Attempting MQTT connection...");
+
+    String clientId = "MQTT-FartSensor";
+    // Attempt to connect
+    if (mqtt.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
+      Serial.println("connected");
+      //mqtt.subscribe("lights/kitchenled/warmstatus");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqtt.state());
+      Serial.println(" try again on next loop");
+    }
+  }
+}
+
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 
   if ( strcmp(topic,"lights/kitchenled/warmstatus") == 0 ) {
     payload[length] = '\0';
-//    warmledState = String((char*)payload).toInt();
+  //  warmledState = String((char*)payload).toInt();
   }
   if ( strcmp(topic,"lights/kitchenled/coldstatus") == 0 ) {
     payload[length] = '\0';
-//    coldledState = String((char*)payload).toInt();
+  //  coldledState = String((char*)payload).toInt();
   } 
 
 }
