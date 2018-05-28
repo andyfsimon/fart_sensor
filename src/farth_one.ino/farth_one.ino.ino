@@ -39,6 +39,7 @@ float si_temperature = 0;
 float SEALEVELPRESSURE_HPA = 0;
 
 int dumpin = 0;
+int reconnects = 0;
 
 // HTTP Variables
 String influx_data = "";
@@ -107,7 +108,7 @@ void setup() {
   
   setup_wifi();
 
-  mqtt.setServer(mqtt_server, 8883);
+  mqtt.setServer(mqtt_server.c_str(), 8883);
   mqtt.setCallback(mqtt_callback);
 
   button.attachClick(Click);
@@ -119,23 +120,28 @@ void setup() {
 void loop() {
   
   button.tick();
+  if ( WiFi.status() != WL_CONNECTED ) {
+    setup_wifi();
+  }
+  
   if (!mqtt.connected() && WiFi.status() == WL_CONNECTED ) {
     mqtt_reconnect();
   }
   mqtt.loop();
   
-  if ( last_sealevel > (millis() + 60000) ) {
+  if ( (last_sealevel + 60000) < millis() ) {
     getSeaLevelPressure();
     last_sealevel = millis();
   }
 
-  if ( last_sensors > (millis() + 5000) ) {
+  if ( (last_sensors + 5000) < millis() ) {
     getSiReadings();
     getBMEReadings();
 
     // Dump data to influxdb
+    Serial.print("Dumping data...");
     influxdb_dump();
-
+    Serial.println("done.");
     last_sensors = millis();
 
   }
@@ -144,12 +150,12 @@ void loop() {
 }
 
 void influxdb_dump()
-{
+{  
   // Dump data to influxdb
   influx_data = "";
   influxdb.begin("http://" + influx_server + ":8086/write?db=fartsensor");
   influxdb.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  influxdb.setAuthorization(influx_user, influx_password);
+  influxdb.setAuthorization(influx_user.c_str(), influx_password.c_str());
   influx_data += "humidity,source=bme value=" + String(bme_humidity) + "\n";
   influx_data += "humidity,source=si value=" + String(si_humidity) + "\n";
   influx_data += "temperature,source=bme value=" + String(bme_temperature) + "\n";
@@ -158,12 +164,16 @@ void influxdb_dump()
   influx_data += "pressure,source=bme value=" + String(bme_pressure) + "\n";
   influx_data += "altitude,source=bme value=" + String(bme_altitude) + "\n";
   influx_data += "dumpin,source=manual value=" + String(dumpin) + "\n";
+  influx_data += "reconnects,source=manual value=" + String(reconnects) + "\n";
 
   httpCode = -1;
+  digitalWrite(0, LOW);
   while(httpCode == -1){
     httpCode = influxdb.POST(influx_data);
     influxdb.writeToStream(&Serial);
   }
+  delay(10);
+  digitalWrite(0, HIGH);
 
   influxdb.end();
 }
@@ -176,6 +186,11 @@ void Click() {
   digitalWrite(0, LOW);
   // Set topic for "taking a dump" (on)
   dumpin = 1;
+  // Force reading
+  getSiReadings();
+  getBMEReadings();
+  delay (1000);
+  // Dump data
   influxdb_dump();
   //mqtt.publish("env/bathroom/dumpin",  String(dumpin).c_str(), true);
 
@@ -241,12 +256,15 @@ void setup_wifi() {
     Serial.print("Connecting to ");
     Serial.println(ssid);
 
-    WiFi.begin(ssid, password);
+    WiFi.begin(ssid.c_str(), password.c_str());
 
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
       Serial.println();
       Serial.printf("Connection status: %d\n", WiFi.status());
+
+
+      
       Serial.print(".");
     }
 
@@ -254,6 +272,8 @@ void setup_wifi() {
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
+    reconnects++;
+    influxdb_dump();
 }
 
 void mqtt_reconnect() {
@@ -262,7 +282,7 @@ void mqtt_reconnect() {
 
     String clientId = "MQTT-FartSensor";
     // Attempt to connect
-    if (mqtt.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
+    if (mqtt.connect(clientId.c_str(), mqtt_user.c_str(), mqtt_password.c_str())) {
       Serial.println("connected");
       //mqtt.subscribe("lights/kitchenled/warmstatus");
     } else {
