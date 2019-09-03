@@ -10,8 +10,8 @@
 #include <ArduinoOTA.h>
 
 // WI-FI Credentials
-const char* ssid = "BeaverNet";
-const char* password = "supercazzora";
+const char* ssid = "********";
+const char* password = "*********";
 
 // InfluxDB Credentials
 String influx_server = "192.168.0.70";
