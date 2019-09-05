@@ -59,8 +59,7 @@ WiFiClientSecure espClient;
 HTTPClient influxdb;
 HTTPClient hass;
 
-void setup(void)
-{
+void setup(void) {
   Serial.begin(9600);
   while (!Serial);
   Serial.println(F("Fart Sensor Study"));
@@ -155,10 +154,8 @@ void setup(void)
   Serial.println(WiFi.localIP());
 }
 
-void loop(void)
-{
+void loop(void) {
   
-//  button.tick();
   if ( WiFi.status() != WL_CONNECTED ) {
     Serial.println("Got Here 3");
     setup_wifi();
@@ -229,8 +226,7 @@ void loop(void)
 
 }
 
-void influxdb_dump()
-{  
+void influxdb_dump() {  
   // Dump data to influxdb
   influx_data = "";
   influxdb.begin("http://" + influx_server + ":8086/write?db=fartsensor");
@@ -256,8 +252,7 @@ void influxdb_dump()
   influxdb.end();
 }
 
-void getSeaLevelPressure()
-{
+void getSeaLevelPressure() {
   hass.begin("http://" + ha_server + ":8123/api/states/sensor.br_pressure" );
   hass.addHeader("Content-Type", "application/json");
   hass.addHeader("Authorization", ha_token);
@@ -285,8 +280,7 @@ void getSeaLevelPressure()
 
 }
 
-void getBMEReadings()
-{
+void getBMEReadings() {
   if (! bme.performReading()) {
   Serial.println("Failed to perform reading :(");
   return;
