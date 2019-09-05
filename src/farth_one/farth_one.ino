@@ -8,10 +8,11 @@
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
+#include <PubSubClient.h>
 
 // WI-FI Credentials
-const char* ssid = "*******";
-const char* password = "*******";
+const char* ssid = "********";
+const char* password = "********";
 
 // InfluxDB Credentials
 //String influx_server = "192.168.0.70";
@@ -19,6 +20,11 @@ byte influx_server[] = {192, 168, 0, 70};
 String influx_user = "hass";
 String influx_password = "neon2145";
 int influx_UDPport = 8089;
+
+// MQTT Credentials
+const char* mqtt_server = "192.168.0.73";
+const char* mqtt_user = "hass";
+const char* mqtt_password = "ipmuia";
 
 // Home Assistant Credentials
 String ha_server = "192.168.0.8";
@@ -56,8 +62,9 @@ bool swappolaluce = false;
 String laitstatus = "OFF";
 
 // Clients
-WiFiClientSecure espClient;
-//PubSubClient mqtt(espClient);
+//WiFiClientSecure espClient;
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
 //HTTPClient influxdb;
 WiFiUDP influxdb_udp;
 HTTPClient hass;
@@ -78,7 +85,7 @@ void setup(void) {
   pinMode (13, OUTPUT);
   //digitalWrite(0, HIGH);
   //digitalWrite(2, HIGH);
-  digitalWrite(13, LOW);
+  digitalWrite(13, HIGH);
 
   if (!bme.begin(0x76)) {
     Serial.println("Could not find a valid BME680 sensor, check wiring!");
@@ -90,7 +97,6 @@ void setup(void) {
     //}
   }
   
-  // Set up oversampling and filter initialization
   bme.setTemperatureOversampling(BME680_OS_8X);
   bme.setHumidityOversampling(BME680_OS_2X);
   bme.setPressureOversampling(BME680_OS_4X);
@@ -105,8 +111,8 @@ void setup(void) {
     ESP.restart();
   }
 
-  //mqtt.setServer(mqtt_server.c_str(), 8883);
-  //mqtt.setCallback(mqtt_callback);
+  mqtt.setServer(mqtt_server, 1883);
+  mqtt.setCallback(mqtt_callback);
 
   getSeaLevelPressure();  
 
@@ -169,33 +175,46 @@ void loop(void) {
     Serial.println(centimetri);
   }
  
+  if (!mqtt.connected() && WiFi.status() == WL_CONNECTED ) {
+    mqtt_reconnect();
+    Serial.println("Reconnecting");
+  }
+  
+  //mqtt.publish("lights/bathroommirror/esticazzi", String(stavofuori).c_str(), true);
 
   if ( centimetri < 10.0 && stavofuori == true ) {
     // Sono entrato nel campo
     Serial.println("Sono Entrato");
+    mqtt.publish("lights/bathroommirror/esticazzi", "Sono Entrato", true);
     stavofuori = false;
     comincioacontare = millis();
   } else if ( centimetri < 10.00 && (millis() - comincioacontare) > 200 ) {
     // e' ora di swappare la luce
     swappolaluce = true;
-    comincioacontare = 0;
+    if ( laitstatus == "OFF" ) {
+      laitstatus = "ON";
+    } else {
+      laitstatus = "OFF";
+    }  
   }
 
   if ( centimetri > 10.00 && stavofuori == false) {
     Serial.println("Sono Uscito");
+    mqtt.publish("lights/bathroommirror/esticazzi", "Sono Uscito", true);
     stavofuori = true;
   }
-
+ 
   if ( swappolaluce == true && comincioacontare != 0  ) {
+//  if ( swappolaluce == true ) {
     Serial.println("SWAPPO LA LUCE");
     swappolaluce = false;
     if ( laitstatus == "OFF" ) {
-      laitstatus = "ON";
       digitalWrite(13, HIGH);
     } else {
-      laitstatus = "OFF";
       digitalWrite(13, LOW);
     }
+    mqtt.publish("lights/bathroommirror/ledstatus", laitstatus.c_str(), true);
+    comincioacontare = 0;
   }
 
   Serial.println();
@@ -217,6 +236,7 @@ void loop(void) {
 
   }
   ArduinoOTA.handle();
+  mqtt.loop();
 
   if ( WiFi.status() != WL_CONNECTED ) {
     setup_wifi();
@@ -234,6 +254,7 @@ void influxdb_dump_udp() {
   influx_data += "airquality,source=bme value=" + String(bme_airquality) + "\n";
   influx_data += "pressure,source=bme value=" + String(bme_pressure) + "\n";
   influx_data += "altitude,source=bme value=" + String(bme_altitude) + "\n";
+  influx_data += "centimetri,source=vl53x value=" + String(centimetri) + "\n";
  
   influxdb_udp.beginPacket(influx_server, influx_UDPport);
   influxdb_udp.print(influx_data);
@@ -332,4 +353,42 @@ void setup_wifi() {
     Serial.println(WiFi.localIP());
     reconnects++;
     influxdb_dump_udp();
+}
+
+void mqtt_callback(char* topic, byte* payload, unsigned int length) {
+
+  if ( strcmp(topic,"lights/bathroommirror/ledstatus") == 0 ) {
+    payload[length] = '\0';
+    //Serial.print("Getting mirror led state: ");
+    String mqttData = String((char*)payload);
+    if ( mqttData == "ON" || mqttData == "OFF" ) {
+      if ( mqttData != laitstatus ) {
+        comincioacontare = 1;
+        laitstatus = mqttData;
+        swappolaluce = true;
+        mqtt.publish("lights/bathroommirror/esticazzi", String(laitstatus).c_str(), true);
+
+      }
+    }
+  }
+}
+
+void mqtt_reconnect() {
+  if (!mqtt.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    String clientName = "MQTT-BathroomMirror";
+    Serial.print("Client ID : ");
+    Serial.println(clientName);
+    
+    // Attempt to connect
+    if (mqtt.connect( clientName.c_str(), mqtt_user, mqtt_password)) {
+      Serial.println("connected");
+      mqtt.subscribe("lights/bathroommirror/ledstatus");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqtt.state());
+      Serial.println(" try again on next loop");
+      //delay (1000);
+    }
+  }
 }
