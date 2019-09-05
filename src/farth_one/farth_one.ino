@@ -10,13 +10,15 @@
 #include <ArduinoOTA.h>
 
 // WI-FI Credentials
-const char* ssid = "********";
-const char* password = "*********";
+const char* ssid = "BeaverNet";
+const char* password = "supercazzora";
 
 // InfluxDB Credentials
-String influx_server = "192.168.0.70";
+//String influx_server = "192.168.0.70";
+byte influx_server[] = {192, 168, 0, 70};
 String influx_user = "hass";
 String influx_password = "neon2145";
+int influx_UDPport = 8089;
 
 // Home Assistant Credentials
 String ha_server = "192.168.0.8";
@@ -56,36 +58,36 @@ String laitstatus = "OFF";
 // Clients
 WiFiClientSecure espClient;
 //PubSubClient mqtt(espClient);
-HTTPClient influxdb;
+//HTTPClient influxdb;
+WiFiUDP influxdb_udp;
 HTTPClient hass;
 
-void setup(void)
-{
+void setup(void) {
   Serial.begin(9600);
   while (!Serial);
   Serial.println(F("Fart Sensor Study"));
   Serial.println("Adafruit VL53L0X test");
   if (!distanceSensor.begin()) {
     Serial.println(F("Failed to boot VL53L0X"));
-    while(1);
+    //while(1);
   }
   
   // Leds
-  pinMode (0, OUTPUT);
-  pinMode (2, OUTPUT);
+  //pinMode (0, OUTPUT);
+  //pinMode (2, OUTPUT);
   pinMode (13, OUTPUT);
-  digitalWrite(0, HIGH);
-  digitalWrite(2, HIGH);
+  //digitalWrite(0, HIGH);
+  //digitalWrite(2, HIGH);
   digitalWrite(13, LOW);
 
   if (!bme.begin(0x76)) {
     Serial.println("Could not find a valid BME680 sensor, check wiring!");
-    while (1) {
-      digitalWrite(0, HIGH);
-      delay(1000);
-      digitalWrite(0, LOW);
-      delay(1000);
-    }
+    //while (1) {
+    //  digitalWrite(0, HIGH);
+    //  delay(1000);
+    //  digitalWrite(0, LOW);
+    //  delay(1000);
+    //}
   }
   
   // Set up oversampling and filter initialization
@@ -95,7 +97,6 @@ void setup(void)
   bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
   bme.setGasHeater(320, 150); // 320*C for 150 ms
 
-  Serial.println("Got Here 1");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED) {
@@ -103,15 +104,12 @@ void setup(void)
     delay(5000);
     ESP.restart();
   }
-  Serial.println("Got Here 2");
 
   //mqtt.setServer(mqtt_server.c_str(), 8883);
   //mqtt.setCallback(mqtt_callback);
 
-
   getSeaLevelPressure();  
 
-  
   // Port defaults to 8266
   // ArduinoOTA.setPort(8266);
 
@@ -155,15 +153,8 @@ void setup(void)
   Serial.println(WiFi.localIP());
 }
 
-void loop(void)
-{
-  
-//  button.tick();
-  if ( WiFi.status() != WL_CONNECTED ) {
-    Serial.println("Got Here 3");
-    setup_wifi();
-  }
-  
+void loop(void) {
+   
   VL53L0X_RangingMeasurementData_t measure;
  
   Serial.print("Reading a measurement... ");
@@ -215,27 +206,48 @@ void loop(void)
 
   delay (100);
   
-  if ( (last_sensors + 50000) < millis() ) {
+  if ( (last_sensors + 5000) < millis() ) {
     getBMEReadings();
 
     // Dump data to influxdb
     Serial.print("Dumping data...");
-    influxdb_dump();
+    influxdb_dump_udp();
     Serial.println("done.");
     last_sensors = millis();
 
   }
   ArduinoOTA.handle();
 
+  if ( WiFi.status() != WL_CONNECTED ) {
+    setup_wifi();
+  }
+
 }
 
-void influxdb_dump()
-{  
+void influxdb_dump_udp() {
+
   // Dump data to influxdb
   influx_data = "";
-  influxdb.begin("http://" + influx_server + ":8086/write?db=fartsensor");
-  influxdb.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  influxdb.setAuthorization(influx_user.c_str(), influx_password.c_str());
+
+  influx_data += "humidity,source=bme value=" + String(bme_humidity) + "\n";
+  influx_data += "temperature,source=bme value=" + String(bme_temperature) + "\n";
+  influx_data += "airquality,source=bme value=" + String(bme_airquality) + "\n";
+  influx_data += "pressure,source=bme value=" + String(bme_pressure) + "\n";
+  influx_data += "altitude,source=bme value=" + String(bme_altitude) + "\n";
+ 
+  influxdb_udp.beginPacket(influx_server, influx_UDPport);
+  influxdb_udp.print(influx_data);
+  influxdb_udp.endPacket();
+ 
+}
+
+
+void influxdb_dump() {  
+  // Dump data to influxdb
+  influx_data = "";
+  //influxdb.begin("http://" + influx_server + ":8086/write?db=fartsensor");
+  //influxdb.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  //influxdb.setAuthorization(influx_user.c_str(), influx_password.c_str());
   influx_data += "humidity,source=bme value=" + String(bme_humidity) + "\n";
   influx_data += "temperature,source=bme value=" + String(bme_temperature) + "\n";
   influx_data += "airquality,source=bme value=" + String(bme_airquality) + "\n";
@@ -247,17 +259,16 @@ void influxdb_dump()
   httpCode = -1;
   digitalWrite(0, LOW);
   while(httpCode == -1){
-    httpCode = influxdb.POST(influx_data);
-    influxdb.writeToStream(&Serial);
+  //  httpCode = influxdb.POST(influx_data);
+  //  influxdb.writeToStream(&Serial);
   }
   delay(10);
   digitalWrite(0, HIGH);
 
-  influxdb.end();
+  //influxdb.end();
 }
 
-void getSeaLevelPressure()
-{
+void getSeaLevelPressure() {
   hass.begin("http://" + ha_server + ":8123/api/states/sensor.br_pressure" );
   hass.addHeader("Content-Type", "application/json");
   hass.addHeader("Authorization", ha_token);
@@ -285,8 +296,7 @@ void getSeaLevelPressure()
 
 }
 
-void getBMEReadings()
-{
+void getBMEReadings() {
   if (! bme.performReading()) {
   Serial.println("Failed to perform reading :(");
   return;
@@ -308,14 +318,11 @@ void setup_wifi() {
     Serial.println(ssid);
 
     WiFi.begin(ssid, password);
-
+    int timeout = millis();
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
       Serial.println();
       Serial.printf("Connection status: %d\n", WiFi.status());
-
-
-      
       Serial.print(".");
     }
 
@@ -324,5 +331,5 @@ void setup_wifi() {
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
     reconnects++;
-    influxdb_dump();
+    influxdb_dump_udp();
 }
