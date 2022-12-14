@@ -15,20 +15,20 @@ const char* ssid = "********";
 const char* password = "********";
 
 // InfluxDB Credentials
-//String influx_server = "192.168.0.70";
-byte influx_server[] = {192, 168, 0, 70};
-String influx_user = "hass";
-String influx_password = "neon2145";
+//String influx_server = "";
+byte influx_server[] = {};
+String influx_user = "";
+String influx_password = "";
 int influx_UDPport = 8089;
 
 // MQTT Credentials
-const char* mqtt_server = "192.168.0.73";
-const char* mqtt_user = "hass";
-const char* mqtt_password = "ipmuia";
+const char* mqtt_server = "";
+const char* mqtt_user = "";
+const char* mqtt_password = "";
 
 // Home Assistant Credentials
-String ha_server = "192.168.0.8";
-String ha_token = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiIyOGRhY2QyMTAzMzY0MzZkYWY4N2YzNTQ1NmJjYzhiZSIsImlhdCI6MTU0ODQyNTAyMiwiZXhwIjoxODYzNzg1MDIyfQ.l_Qo5DUh6msDaPEhZTCwdoYS6tCEFfdEZAAlKzfceHI";
+String ha_server = "";
+String ha_token = "";
 
 // Sensor Variables
 float bme_humidity = 0;
